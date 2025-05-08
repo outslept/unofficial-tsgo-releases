@@ -126,7 +126,8 @@ jobs:
     steps:
       - name: Enable long paths on Windows
         if: matrix.go_os == 'windows'
-        run: git config --system core.longpaths true
+        shell: bash
+        run: git config --global core.longpaths true
 
       - name: Harden Runner
         uses: step-security/harden-runner@v2.12.0
