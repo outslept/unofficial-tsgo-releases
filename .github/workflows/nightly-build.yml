@@ -1,6 +1,9 @@
 name: Build and Release tsgo Nightly from Submodule
 
 on:
+  push:
+    branches:
+      - master
   schedule:
     - cron: '0 0 * * *'
   workflow_dispatch: {}
@@ -40,8 +43,6 @@ jobs:
           git fetch origin main
           git checkout main
           git pull origin main
-          # If the submodule is configured to track a specific branch already, 'git submodule update --remote' might also work
-          # but the above is more explicit for ensuring it's on the latest of its 'main' (or primary) branch.
 
       - name: Get commit information from submodule
         id: commit_info
@@ -70,7 +71,6 @@ jobs:
         run: |
           git config user.name "${{ github.actor }}"
           git config user.email "${{ github.actor }}@users.noreply.github.com"
-          # Check if there are any changes to the submodule pointer
           if ! git diff --quiet ${{ env.TSGO_SRC_PATH }}; then
             git add ${{ env.TSGO_SRC_PATH }}
             git commit -m "Update tsgo submodule to ${{ steps.commit_info.outputs.SHA_SHORT }} (${{ steps.commit_info.outputs.DATE }})"
