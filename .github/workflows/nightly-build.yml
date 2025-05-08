@@ -77,27 +77,57 @@ jobs:
           fi
 
   build_binaries:
-    name: Build tsgo Binary (${{ matrix.os }})
+    name: Build tsgo Binary (${{ matrix.target_os }}/${{ matrix.target_arch }})
     needs: determine_release_vars
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
         include:
-          - os: ubuntu-latest
+          - target_os: ubuntu-latest
+            target_arch: amd64
+            go_os: linux
+            go_arch: amd64
             asset_name_suffix: linux-amd64
             binary_name: tsgo
             archive_format: tar.gz
-          - os: windows-latest
+          - target_os: ubuntu-latest
+            target_arch: arm64
+            go_os: linux
+            go_arch: arm64
+            asset_name_suffix: linux-arm64
+            binary_name: tsgo
+            archive_format: tar.gz
+          - target_os: windows-latest
+            target_arch: amd64
+            go_os: windows
+            go_arch: amd64
             asset_name_suffix: windows-amd64
             binary_name: tsgo.exe
             archive_format: zip
-          - os: macos-latest
-            asset_name_suffix: macos-amd64
+          - target_os: macos-latest
+            target_arch: amd64
+            go_os: darwin
+            go_arch: amd64
+            asset_name_suffix: darwin-amd64
             binary_name: tsgo
             archive_format: tar.gz
-    runs-on: ${{ matrix.os }}
+          - target_os: macos-latest
+            target_arch: arm64
+            go_os: darwin
+            go_arch: arm64
+            asset_name_suffix: darwin-arm64
+            binary_name: tsgo
+            archive_format: tar.gz
+
+    runs-on: ${{ matrix.target_os }}
+    env:
+      GOOS: ${{ matrix.go_os }}
+      GOARCH: ${{ matrix.go_arch }}
     steps:
+      - name: Enable long paths on Windows
+        if: matrix.go_os == 'windows'
+        run: git config --system core.longpaths true
+
       - name: Harden Runner
         uses: step-security/harden-runner@v2.12.0
         with:
@@ -107,6 +137,10 @@ jobs:
         uses: actions/checkout@v4.2.2
         with:
           submodules: 'recursive'
+
+      - name: Set up QEMU
+        if: matrix.target_os == 'ubuntu-latest' && matrix.target_arch == 'arm64'
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Node.js
         uses: actions/setup-node@v4.4.0
@@ -119,6 +153,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
+          targets: ${{ (matrix.go_os == 'linux' && matrix.go_arch == 'arm64' && 'aarch64-unknown-linux-gnu') || (matrix.go_os == 'darwin' && matrix.go_arch == 'arm64' && 'aarch64-apple-darwin') || '' }}
 
       - name: Set up Go
         uses: actions/setup-go@v5.5.0
@@ -145,7 +180,14 @@ jobs:
         run: |
           cd ${{ env.TSGO_SRC_PATH }}/built/local
           BINARY_NAME="${{ matrix.binary_name }}"
-          ARCHIVE_NAME="tsgo-${{ needs.determine_release_vars.outputs.tsgo_commit_sha_short }}-${{ matrix.asset_name_suffix }}"
+          ARCHIVE_NAME="tsgo-${{ matrix.asset_name_suffix }}"
+
+          if [ ! -f "$BINARY_NAME" ]; then
+            echo "Error: Binary '$BINARY_NAME' not found in $(pwd)"
+            ls -la
+            exit 1
+          fi
+
           if [ "${{ matrix.archive_format }}" == "zip" ]; then
             zip "${ARCHIVE_NAME}.zip" "$BINARY_NAME"
             echo "ASSET_PATH=${PWD}/${ARCHIVE_NAME}.zip" >> $GITHUB_OUTPUT
@@ -159,7 +201,7 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: artifact-${{ matrix.os }}
+          name: artifact-${{ matrix.asset_name_suffix }}
           path: ${{ steps.prepare_artifact.outputs.ASSET_PATH }}
           if-no-files-found: error
 
@@ -175,6 +217,16 @@ jobs:
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v4.3.0
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          checksum_file="tsgo-releases_${{ needs.determine_release_vars.outputs.tsgo_commit_date }}_checksums.txt"
+          find artifact-* -type f \( -name "*.zip" -o -name "*.tar.gz" \) -print0 | while IFS= read -r -d $'\0' file; do
+            sha256sum "$file" >> "$checksum_file"
+          done
+          echo "Checksum file generated: $checksum_file"
+          cat "$checksum_file"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2.2.2
@@ -197,4 +249,5 @@ jobs:
           files: |
             artifact-*/*.zip
             artifact-*/*.tar.gz
+            tsgo-releases_*_checksums.txt
           fail_on_unmatched_files: true
