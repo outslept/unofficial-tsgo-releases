@@ -175,43 +175,47 @@ jobs:
         working-directory: ${{ env.TSGO_SRC_PATH }}
         run: npx hereby build
 
-      - name: Prepare artifact for release
-        id: prepare_artifact
-        shell: ${{ matrix.go_os == 'windows' && 'pwsh' || 'bash' }}
+      - name: Prepare artifact for release (Windows zip)
+        id: prepare_artifact_windows
+        if: matrix.go_os == 'windows' && matrix.archive_format == 'zip'
+        shell: pwsh
         run: |
           cd ${{ env.TSGO_SRC_PATH }}/built/local
+          $env:PSBINARY_NAME = "${{ matrix.binary_name }}"
+          $env:PSARCHIVE_NAME = "tsgo-${{ matrix.asset_name_suffix }}"
 
-          if ("${{ matrix.go_os }}" -eq "windows") {
-            $env:PSBINARY_NAME = "${{ matrix.binary_name }}"
-            $env:PSARCHIVE_NAME = "tsgo-${{ matrix.asset_name_suffix }}"
-
-            if (-not (Test-Path $env:PSBINARY_NAME)) {
-              Write-Error "Binary '$($env:PSBINARY_NAME)' not found in $(Get-Location)"
-              Get-ChildItem
-              exit 1
-            }
-            Compress-Archive -Path $env:PSBINARY_NAME -DestinationPath "$($env:PSARCHIVE_NAME).zip" -Force
-            echo "ASSET_PATH=$(Resolve-Path -Path "$($env:PSARCHIVE_NAME).zip" | ForEach-Object {$_.Path})" >> $env:GITHUB_OUTPUT
-            echo "ASSET_NAME=$($env:PSARCHIVE_NAME).zip" >> $env:GITHUB_OUTPUT
-          } else {
-            BINARY_NAME_BASH="${{ matrix.binary_name }}"
-            ARCHIVE_NAME_BASH="tsgo-${{ matrix.asset_name_suffix }}"
-
-            if [ ! -f "$BINARY_NAME_BASH" ]; then
-              echo "Error: Binary '$BINARY_NAME_BASH' not found in $(pwd)"
-              ls -la
-              exit 1
-            fi
-            tar -czvf "${ARCHIVE_NAME_BASH}.tar.gz" "$BINARY_NAME_BASH"
-            echo "ASSET_PATH=${PWD}/${ARCHIVE_NAME_BASH}.tar.gz" >> $GITHUB_OUTPUT
-            echo "ASSET_NAME=${ARCHIVE_NAME_BASH}.tar.gz" >> $GITHUB_OUTPUT
+          if (-not (Test-Path $env:PSBINARY_NAME)) {
+            Write-Error "Binary '$($env:PSBINARY_NAME)' not found in $(Get-Location)"
+            Get-ChildItem
+            exit 1
           }
+          Compress-Archive -Path $env:PSBINARY_NAME -DestinationPath "$($env:PSARCHIVE_NAME).zip" -Force
+          echo "ASSET_PATH=$(Resolve-Path -Path "$($env:PSARCHIVE_NAME).zip" | ForEach-Object {$_.Path})" >> $env:GITHUB_OUTPUT
+          echo "ASSET_NAME=$($env:PSARCHIVE_NAME).zip" >> $env:GITHUB_OUTPUT
+
+      - name: Prepare artifact for release (tar.gz)
+        id: prepare_artifact_tar
+        if: matrix.archive_format == 'tar.gz' # This will run for Linux and macOS
+        shell: bash
+        run: |
+          cd ${{ env.TSGO_SRC_PATH }}/built/local
+          BINARY_NAME_BASH="${{ matrix.binary_name }}"
+          ARCHIVE_NAME_BASH="tsgo-${{ matrix.asset_name_suffix }}"
+
+          if [ ! -f "$BINARY_NAME_BASH" ]; then
+            echo "Error: Binary '$BINARY_NAME_BASH' not found in $(pwd)"
+            ls -la
+            exit 1
+          fi
+          tar -czvf "${ARCHIVE_NAME_BASH}.tar.gz" "$BINARY_NAME_BASH"
+          echo "ASSET_PATH=${PWD}/${ARCHIVE_NAME_BASH}.tar.gz" >> $GITHUB_OUTPUT
+          echo "ASSET_NAME=${ARCHIVE_NAME_BASH}.tar.gz" >> $GITHUB_OUTPUT
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: artifact-${{ matrix.asset_name_suffix }}
-          path: ${{ steps.prepare_artifact.outputs.ASSET_PATH }}
+          path: ${{ (matrix.go_os == 'windows' && steps.prepare_artifact_windows.outputs.ASSET_PATH) || steps.prepare_artifact_tar.outputs.ASSET_PATH }}
           if-no-files-found: error
 
   publish_release:
