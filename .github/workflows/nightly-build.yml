@@ -177,27 +177,35 @@ jobs:
 
       - name: Prepare artifact for release
         id: prepare_artifact
-        shell: bash
+        shell: ${{ matrix.go_os == 'windows' && 'pwsh' || 'bash' }}
         run: |
           cd ${{ env.TSGO_SRC_PATH }}/built/local
-          BINARY_NAME="${{ matrix.binary_name }}"
-          ARCHIVE_NAME="tsgo-${{ matrix.asset_name_suffix }}"
 
-          if [ ! -f "$BINARY_NAME" ]; then
-            echo "Error: Binary '$BINARY_NAME' not found in $(pwd)"
-            ls -la
-            exit 1
-          fi
+          if ("${{ matrix.go_os }}" -eq "windows") {
+            $env:PSBINARY_NAME = "${{ matrix.binary_name }}"
+            $env:PSARCHIVE_NAME = "tsgo-${{ matrix.asset_name_suffix }}"
 
-          if [ "${{ matrix.archive_format }}" == "zip" ]; then
-            zip "${ARCHIVE_NAME}.zip" "$BINARY_NAME"
-            echo "ASSET_PATH=${PWD}/${ARCHIVE_NAME}.zip" >> $GITHUB_OUTPUT
-            echo "ASSET_NAME=${ARCHIVE_NAME}.zip" >> $GITHUB_OUTPUT
-          else
-            tar -czvf "${ARCHIVE_NAME}.tar.gz" "$BINARY_NAME"
-            echo "ASSET_PATH=${PWD}/${ARCHIVE_NAME}.tar.gz" >> $GITHUB_OUTPUT
-            echo "ASSET_NAME=${ARCHIVE_NAME}.tar.gz" >> $GITHUB_OUTPUT
-          fi
+            if (-not (Test-Path $env:PSBINARY_NAME)) {
+              Write-Error "Binary '$($env:PSBINARY_NAME)' not found in $(Get-Location)"
+              Get-ChildItem
+              exit 1
+            }
+            Compress-Archive -Path $env:PSBINARY_NAME -DestinationPath "$($env:PSARCHIVE_NAME).zip" -Force
+            echo "ASSET_PATH=$(Resolve-Path -Path "$($env:PSARCHIVE_NAME).zip" | ForEach-Object {$_.Path})" >> $env:GITHUB_OUTPUT
+            echo "ASSET_NAME=$($env:PSARCHIVE_NAME).zip" >> $env:GITHUB_OUTPUT
+          } else {
+            BINARY_NAME_BASH="${{ matrix.binary_name }}"
+            ARCHIVE_NAME_BASH="tsgo-${{ matrix.asset_name_suffix }}"
+
+            if [ ! -f "$BINARY_NAME_BASH" ]; then
+              echo "Error: Binary '$BINARY_NAME_BASH' not found in $(pwd)"
+              ls -la
+              exit 1
+            fi
+            tar -czvf "${ARCHIVE_NAME_BASH}.tar.gz" "$BINARY_NAME_BASH"
+            echo "ASSET_PATH=${PWD}/${ARCHIVE_NAME_BASH}.tar.gz" >> $GITHUB_OUTPUT
+            echo "ASSET_NAME=${ARCHIVE_NAME_BASH}.tar.gz" >> $GITHUB_OUTPUT
+          }
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
