@@ -157,7 +157,7 @@ jobs:
           fi
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@4
+        uses: actions/upload-artifact@v4
         with:
           name: artifact-${{ matrix.os }}
           path: ${{ steps.prepare_artifact.outputs.ASSET_PATH }}
