@@ -1,0 +1,203 @@
+name: Build and Release tsgo Nightly from Submodule
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+env:
+  TSGO_SRC_PATH: tsgo_submodule
+
+jobs:
+  determine_release_vars:
+    name: Determine Release Variables from Submodule
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.vars.outputs.tag_name }}
+      release_name: ${{ steps.vars.outputs.release_name }}
+      tsgo_commit_sha: ${{ steps.vars.outputs.tsgo_commit_sha }}
+      tsgo_commit_sha_short: ${{ steps.vars.outputs.tsgo_commit_sha_short }}
+      tsgo_commit_date: ${{ steps.vars.outputs.tsgo_commit_date }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@v2.12.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout main repository and update submodule
+        uses: actions/checkout@v4.2.2
+        with:
+          submodules: 'recursive'
+          fetch-depth: 0
+
+      - name: Update submodule to latest commit from its main branch
+        shell: bash
+        working-directory: ${{ env.TSGO_SRC_PATH }}
+        run: |
+          git fetch origin main
+          git checkout main
+          git pull origin main
+          # If the submodule is configured to track a specific branch already, 'git submodule update --remote' might also work
+          # but the above is more explicit for ensuring it's on the latest of its 'main' (or primary) branch.
+
+      - name: Get commit information from submodule
+        id: commit_info
+        shell: bash
+        working-directory: ${{ env.TSGO_SRC_PATH }}
+        run: |
+          echo "SHA=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          echo "SHA_SHORT=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "DATE=$(git log -1 --format=%cs)" >> $GITHUB_OUTPUT
+
+      - name: Set release variables
+        id: vars
+        shell: bash
+        run: |
+          TAG_NAME="nightly-${{ steps.commit_info.outputs.DATE }}-${{ steps.commit_info.outputs.SHA_SHORT }}"
+          RELEASE_NAME="tsgo nightly (submodule @${{ steps.commit_info.outputs.SHA_SHORT }}) built on ${{ steps.commit_info.outputs.DATE }}"
+          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "release_name=${RELEASE_NAME}" >> $GITHUB_OUTPUT
+          echo "tsgo_commit_sha=${{ steps.commit_info.outputs.SHA }}" >> $GITHUB_OUTPUT
+          echo "tsgo_commit_sha_short=${{ steps.commit_info.outputs.SHA_SHORT }}" >> $GITHUB_OUTPUT
+          echo "tsgo_commit_date=${{ steps.commit_info.outputs.DATE }}" >> $GITHUB_OUTPUT
+
+      - name: Commit submodule update
+        if: ${{ github.event_name == 'schedule' }}
+        shell: bash
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          # Check if there are any changes to the submodule pointer
+          if ! git diff --quiet ${{ env.TSGO_SRC_PATH }}; then
+            git add ${{ env.TSGO_SRC_PATH }}
+            git commit -m "Update tsgo submodule to ${{ steps.commit_info.outputs.SHA_SHORT }} (${{ steps.commit_info.outputs.DATE }})"
+            git push
+          else
+            echo "Submodule is already up-to-date."
+          fi
+
+  build_binaries:
+    name: Build tsgo Binary (${{ matrix.os }})
+    needs: determine_release_vars
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            asset_name_suffix: linux-amd64
+            binary_name: tsgo
+            archive_format: tar.gz
+          - os: windows-latest
+            asset_name_suffix: windows-amd64
+            binary_name: tsgo.exe
+            archive_format: zip
+          - os: macos-latest
+            asset_name_suffix: macos-amd64
+            binary_name: tsgo
+            archive_format: tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@v2.12.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout main repository and initialized submodule
+        uses: actions/checkout@v4.2.2
+        with:
+          submodules: 'recursive'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 'lts/*'
+          cache: 'npm'
+          cache-dependency-path: '${{ env.TSGO_SRC_PATH }}/package-lock.json'
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1
+        with:
+          toolchain: stable
+
+      - name: Set up Go
+        uses: actions/setup-go@v5.5.0
+        with:
+          go-version: '>=1.24.0'
+          cache: true
+          cache-dependency-path: |
+            ${{ env.TSGO_SRC_PATH }}/**/go.sum
+            ${{ env.TSGO_SRC_PATH }}/**/go.mod
+
+      - name: Install Node.js dependencies
+        shell: bash
+        working-directory: ${{ env.TSGO_SRC_PATH }}
+        run: npm ci
+
+      - name: Build tsgo executable
+        shell: bash
+        working-directory: ${{ env.TSGO_SRC_PATH }}
+        run: npx hereby build
+
+      - name: Prepare artifact for release
+        id: prepare_artifact
+        shell: bash
+        run: |
+          cd ${{ env.TSGO_SRC_PATH }}/built/local
+          BINARY_NAME="${{ matrix.binary_name }}"
+          ARCHIVE_NAME="tsgo-${{ needs.determine_release_vars.outputs.tsgo_commit_sha_short }}-${{ matrix.asset_name_suffix }}"
+          if [ "${{ matrix.archive_format }}" == "zip" ]; then
+            zip "${ARCHIVE_NAME}.zip" "$BINARY_NAME"
+            echo "ASSET_PATH=${PWD}/${ARCHIVE_NAME}.zip" >> $GITHUB_OUTPUT
+            echo "ASSET_NAME=${ARCHIVE_NAME}.zip" >> $GITHUB_OUTPUT
+          else
+            tar -czvf "${ARCHIVE_NAME}.tar.gz" "$BINARY_NAME"
+            echo "ASSET_PATH=${PWD}/${ARCHIVE_NAME}.tar.gz" >> $GITHUB_OUTPUT
+            echo "ASSET_NAME=${ARCHIVE_NAME}.tar.gz" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@3.0.0
+        with:
+          name: artifact-${{ matrix.os }}
+          path: ${{ steps.prepare_artifact.outputs.ASSET_PATH }}
+          if-no-files-found: error
+
+  publish_release:
+    name: Publish GitHub Release
+    needs: [determine_release_vars, build_binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@v2.12.0
+        with:
+          egress-policy: audit
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4.3.0
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2.2.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ needs.determine_release_vars.outputs.tag_name }}
+          name: ${{ needs.determine_release_vars.outputs.release_name }}
+          body: |
+            Nightly build of tsgo (via submodule).
+
+            Source submodule `tsgo_submodule` at commit `${{ needs.determine_release_vars.outputs.tsgo_commit_sha }}`.
+            Built on: `${{ needs.determine_release_vars.outputs.tsgo_commit_date }}`.
+
+            **Warning:** This is an unofficial build and may be unstable. Use at your own risk.
+            Binaries are built directly from the official repository submodule without modification.
+            The build workflow is available [here](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+          draft: false
+          prerelease: true
+          files: |
+            artifact-*/*.zip
+            artifact-*/*.tar.gz
+          fail_on_unmatched_files: true

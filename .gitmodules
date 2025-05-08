@@ -1,0 +1,3 @@
+[submodule "tsgo_submodule"]
+	path = tsgo_submodule
+	url = https://github.com/microsoft/typescript-go.git
