@@ -22,13 +22,11 @@ jobs:
       tsgo_commit_sha_short: ${{ steps.vars.outputs.tsgo_commit_sha_short }}
       tsgo_commit_date: ${{ steps.vars.outputs.tsgo_commit_date }}
     steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@v2.12.0
+      - uses: step-security/harden-runner@v2.12.0
         with:
           egress-policy: audit
 
-      - name: Checkout main repository and update submodule
-        uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v4.2.2
         with:
           submodules: 'recursive'
           fetch-depth: 0
@@ -54,10 +52,8 @@ jobs:
         id: vars
         shell: bash
         run: |
-          TAG_NAME="nightly-${{ steps.commit_info.outputs.DATE }}-${{ steps.commit_info.outputs.SHA_SHORT }}"
-          RELEASE_NAME="tsgo nightly (submodule @${{ steps.commit_info.outputs.SHA_SHORT }}) built on ${{ steps.commit_info.outputs.DATE }}"
-          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
-          echo "release_name=${RELEASE_NAME}" >> $GITHUB_OUTPUT
+          echo "tag_name=${{ steps.commit_info.outputs.DATE }}" >> $GITHUB_OUTPUT
+          echo "release_name=Daily automated build of TypeScript Go from microsoft/typescript-go@${{ steps.commit_info.outputs.SHA_SHORT }}" >> $GITHUB_OUTPUT
           echo "tsgo_commit_sha=${{ steps.commit_info.outputs.SHA }}" >> $GITHUB_OUTPUT
           echo "tsgo_commit_sha_short=${{ steps.commit_info.outputs.SHA_SHORT }}" >> $GITHUB_OUTPUT
           echo "tsgo_commit_date=${{ steps.commit_info.outputs.DATE }}" >> $GITHUB_OUTPUT
@@ -66,15 +62,11 @@ jobs:
         if: ${{ github.event_name == 'schedule' }}
         shell: bash
         run: |
-          git config user.name "${{ github.actor }}"
-          git config user.email "${{ github.actor }}@users.noreply.github.com"
-          if ! git diff --quiet ${{ env.TSGO_SRC_PATH }}; then
-            git add ${{ env.TSGO_SRC_PATH }}
-            git commit -m "Update tsgo submodule to ${{ steps.commit_info.outputs.SHA_SHORT }} (${{ steps.commit_info.outputs.DATE }})"
-            git push
-          else
-            echo "Submodule is already up-to-date."
-          fi
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ${{ env.TSGO_SRC_PATH }}
+          git commit -m "Update tsgo submodule to ${{ steps.commit_info.outputs.SHA_SHORT }} (${{ steps.commit_info.outputs.DATE }})" || true
+          git push || true
 
   build_binaries:
     name: Build tsgo Binary (${{ matrix.target_os }}/${{ matrix.target_arch }})
@@ -104,6 +96,13 @@ jobs:
             asset_name_suffix: windows-amd64
             binary_name: tsgo.exe
             archive_format: zip
+          - target_os: windows-latest
+            target_arch: arm64
+            go_os: windows
+            go_arch: arm64
+            asset_name_suffix: windows-arm64
+            binary_name: tsgo.exe
+            archive_format: zip
           - target_os: macos-latest
             target_arch: amd64
             go_os: darwin
@@ -118,46 +117,51 @@ jobs:
             asset_name_suffix: darwin-arm64
             binary_name: tsgo
             archive_format: tar.gz
+          - target_os: ubuntu-latest
+            target_arch: wasm
+            go_os: js
+            go_arch: wasm
+            asset_name_suffix: js-wasm
+            binary_name: tsgo.wasm
+            archive_format: tar.gz
+            env:
+              CGO_ENABLED: 0
 
     runs-on: ${{ matrix.target_os }}
     env:
       GOOS: ${{ matrix.go_os }}
       GOARCH: ${{ matrix.go_arch }}
+      CGO_ENABLED: ${{ matrix.env.CGO_ENABLED || 1 }}
+
     steps:
       - name: Enable long paths on Windows
         if: matrix.go_os == 'windows'
         shell: bash
         run: git config --global core.longpaths true
 
-      - name: Harden Runner
-        uses: step-security/harden-runner@v2.12.0
+      - uses: step-security/harden-runner@v2.12.0
         with:
           egress-policy: audit
 
-      - name: Checkout main repository and initialized submodule
-        uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v4.2.2
         with:
           submodules: 'recursive'
 
-      - name: Set up QEMU
+      - uses: docker/setup-qemu-action@v3
         if: matrix.target_os == 'ubuntu-latest' && matrix.target_arch == 'arm64'
-        uses: docker/setup-qemu-action@v3
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4.4.0
+      - uses: actions/setup-node@v4.4.0
         with:
           node-version: 'lts/*'
           cache: 'npm'
           cache-dependency-path: '${{ env.TSGO_SRC_PATH }}/package-lock.json'
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           targets: ${{ (matrix.go_os == 'linux' && matrix.go_arch == 'arm64' && 'aarch64-unknown-linux-gnu') || (matrix.go_os == 'darwin' && matrix.go_arch == 'arm64' && 'aarch64-apple-darwin') || '' }}
 
-      - name: Set up Go
-        uses: actions/setup-go@v5.5.0
+      - uses: actions/setup-go@v5.5.0
         with:
           go-version: '>=1.24.0'
           cache: true
@@ -181,38 +185,21 @@ jobs:
         shell: pwsh
         run: |
           cd ${{ env.TSGO_SRC_PATH }}/built/local
-          $env:PSBINARY_NAME = "${{ matrix.binary_name }}"
-          $env:PSARCHIVE_NAME = "tsgo-${{ matrix.asset_name_suffix }}"
-
-          if (-not (Test-Path $env:PSBINARY_NAME)) {
-            Write-Error "Binary '$($env:PSBINARY_NAME)' not found in $(Get-Location)"
-            Get-ChildItem
-            exit 1
-          }
-          Compress-Archive -Path $env:PSBINARY_NAME -DestinationPath "$($env:PSARCHIVE_NAME).zip" -Force
-          echo "ASSET_PATH=$(Resolve-Path -Path "$($env:PSARCHIVE_NAME).zip" | ForEach-Object {$_.Path})" >> $env:GITHUB_OUTPUT
-          echo "ASSET_NAME=$($env:PSARCHIVE_NAME).zip" >> $env:GITHUB_OUTPUT
+          Compress-Archive -Path * -DestinationPath "tsgo-${{ matrix.asset_name_suffix }}.zip" -Force
+          echo "ASSET_PATH=$(Resolve-Path -Path "tsgo-${{ matrix.asset_name_suffix }}.zip" | ForEach-Object {$_.Path})" >> $env:GITHUB_OUTPUT
+          echo "ASSET_NAME=tsgo-${{ matrix.asset_name_suffix }}.zip" >> $env:GITHUB_OUTPUT
 
       - name: Prepare artifact for release (tar.gz)
         id: prepare_artifact_tar
-        if: matrix.archive_format == 'tar.gz' # This will run for Linux and macOS
+        if: matrix.archive_format == 'tar.gz'
         shell: bash
         run: |
           cd ${{ env.TSGO_SRC_PATH }}/built/local
-          BINARY_NAME_BASH="${{ matrix.binary_name }}"
-          ARCHIVE_NAME_BASH="tsgo-${{ matrix.asset_name_suffix }}"
+          tar -czvf "tsgo-${{ matrix.asset_name_suffix }}.tar.gz" *
+          echo "ASSET_PATH=${PWD}/tsgo-${{ matrix.asset_name_suffix }}.tar.gz" >> $GITHUB_OUTPUT
+          echo "ASSET_NAME=tsgo-${{ matrix.asset_name_suffix }}.tar.gz" >> $GITHUB_OUTPUT
 
-          if [ ! -f "$BINARY_NAME_BASH" ]; then
-            echo "Error: Binary '$BINARY_NAME_BASH' not found in $(pwd)"
-            ls -la
-            exit 1
-          fi
-          tar -czvf "${ARCHIVE_NAME_BASH}.tar.gz" "$BINARY_NAME_BASH"
-          echo "ASSET_PATH=${PWD}/${ARCHIVE_NAME_BASH}.tar.gz" >> $GITHUB_OUTPUT
-          echo "ASSET_NAME=${ARCHIVE_NAME_BASH}.tar.gz" >> $GITHUB_OUTPUT
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: artifact-${{ matrix.asset_name_suffix }}
           path: ${{ (matrix.go_os == 'windows' && steps.prepare_artifact_windows.outputs.ASSET_PATH) || steps.prepare_artifact_tar.outputs.ASSET_PATH }}
@@ -223,13 +210,11 @@ jobs:
     needs: [determine_release_vars, build_binaries]
     runs-on: ubuntu-latest
     steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@v2.12.0
+      - uses: step-security/harden-runner@v2.12.0
         with:
           egress-policy: audit
 
-      - name: Download all build artifacts
-        uses: actions/download-artifact@v4.3.0
+      - uses: actions/download-artifact@v4.3.0
 
       - name: Generate checksums
         shell: bash
@@ -241,20 +226,24 @@ jobs:
           echo "Checksum file generated: $checksum_file"
           cat "$checksum_file"
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2.2.2
+      - uses: softprops/action-gh-release@v2.2.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ needs.determine_release_vars.outputs.tag_name }}
           name: ${{ needs.determine_release_vars.outputs.release_name }}
           body: |
-            Nightly build of tsgo (via submodule).
+            Daily automated build of TypeScript Go from [`microsoft/typescript-go@${{ needs.determine_release_vars.outputs.tsgo_commit_sha_short }}`](https://github.com/microsoft/typescript-go/commit/${{ needs.determine_release_vars.outputs.tsgo_commit_sha }}).
 
-            Source submodule `tsgo_submodule` at commit `${{ needs.determine_release_vars.outputs.tsgo_commit_sha }}`.
-            Built on: `${{ needs.determine_release_vars.outputs.tsgo_commit_date }}`.
+            Build date: ${{ needs.determine_release_vars.outputs.tsgo_commit_date }}
 
-            **Warning:** This is an unofficial build and may be unstable. Use at your own risk.
+            ## Contents
+
+            These archives contain all files from the `built/local` directory, including the `tsgo` binary.
+
+            ## ⚠️ Note
+
+            This is an **unofficial build** and may be unstable. Use at your own risk.
             Binaries are built directly from the official repository submodule without modification.
             The build workflow is available [here](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
           draft: false
@@ -264,3 +253,4 @@ jobs:
             artifact-*/*.tar.gz
             tsgo-releases_*_checksums.txt
           fail_on_unmatched_files: true
+          replace_artifacts_on_duplicate: true
