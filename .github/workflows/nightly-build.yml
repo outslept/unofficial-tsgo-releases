@@ -62,7 +62,7 @@ jobs:
         id: vars
         shell: bash
         run: |
-          TIMESTAMP=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+          TIMESTAMP=$(date -u '+%Y%m%d-%H%M%S')
           echo "tag_name=${{ steps.commit_info.outputs.DATE }}-${TIMESTAMP}" >> $GITHUB_OUTPUT
           echo "release_name=Nightly build ${TIMESTAMP} of TypeScript Go from microsoft/typescript-go@${{ steps.commit_info.outputs.SHA_SHORT }}" >> $GITHUB_OUTPUT
           echo "tsgo_commit_sha=${{ steps.commit_info.outputs.SHA }}" >> $GITHUB_OUTPUT
