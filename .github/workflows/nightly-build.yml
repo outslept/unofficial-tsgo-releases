@@ -31,13 +31,23 @@ jobs:
           submodules: 'recursive'
           fetch-depth: 0
 
-      - name: Update submodule to latest commit from its main branch
+      - name: Update submodule
         shell: bash
-        working-directory: ${{ env.TSGO_SRC_PATH }}
         run: |
+          git submodule init
+          git submodule update
+          cd ${{ env.TSGO_SRC_PATH }}
           git fetch origin main
           git checkout main
           git pull origin main
+          cd ..
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ${{ env.TSGO_SRC_PATH }}
+          if ! git diff --staged --quiet; then
+            git commit -m "Update tsgo submodule to latest main"
+            git push
+          fi
 
       - name: Get commit information from submodule
         id: commit_info
@@ -52,21 +62,12 @@ jobs:
         id: vars
         shell: bash
         run: |
-          echo "tag_name=${{ steps.commit_info.outputs.DATE }}" >> $GITHUB_OUTPUT
-          echo "release_name=Daily automated build of TypeScript Go from microsoft/typescript-go@${{ steps.commit_info.outputs.SHA_SHORT }}" >> $GITHUB_OUTPUT
+          TIMESTAMP=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+          echo "tag_name=${{ steps.commit_info.outputs.DATE }}-${TIMESTAMP}" >> $GITHUB_OUTPUT
+          echo "release_name=Nightly build ${TIMESTAMP} of TypeScript Go from microsoft/typescript-go@${{ steps.commit_info.outputs.SHA_SHORT }}" >> $GITHUB_OUTPUT
           echo "tsgo_commit_sha=${{ steps.commit_info.outputs.SHA }}" >> $GITHUB_OUTPUT
           echo "tsgo_commit_sha_short=${{ steps.commit_info.outputs.SHA_SHORT }}" >> $GITHUB_OUTPUT
           echo "tsgo_commit_date=${{ steps.commit_info.outputs.DATE }}" >> $GITHUB_OUTPUT
-
-      - name: Commit submodule update
-        if: ${{ github.event_name == 'schedule' }}
-        shell: bash
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add ${{ env.TSGO_SRC_PATH }}
-          git commit -m "Update tsgo submodule to ${{ steps.commit_info.outputs.SHA_SHORT }} (${{ steps.commit_info.outputs.DATE }})" || true
-          git push || true
 
   build_binaries:
     name: Build tsgo Binary (${{ matrix.target_os }}/${{ matrix.target_arch }})
@@ -223,8 +224,6 @@ jobs:
           find artifact-* -type f \( -name "*.zip" -o -name "*.tar.gz" \) -print0 | while IFS= read -r -d $'\0' file; do
             sha256sum "$file" >> "$checksum_file"
           done
-          echo "Checksum file generated: $checksum_file"
-          cat "$checksum_file"
 
       - uses: softprops/action-gh-release@v2.2.2
         env:
@@ -233,17 +232,15 @@ jobs:
           tag_name: ${{ needs.determine_release_vars.outputs.tag_name }}
           name: ${{ needs.determine_release_vars.outputs.release_name }}
           body: |
-            Daily automated build of TypeScript Go from [`microsoft/typescript-go@${{ needs.determine_release_vars.outputs.tsgo_commit_sha_short }}`](https://github.com/microsoft/typescript-go/commit/${{ needs.determine_release_vars.outputs.tsgo_commit_sha }}).
+            ${{ needs.determine_release_vars.outputs.release_name }}
 
-            Build date: ${{ needs.determine_release_vars.outputs.tsgo_commit_date }}
+            Build timestamp: ${{ needs.determine_release_vars.outputs.tag_name }}
 
             ## Contents
-
             These archives contain all files from the `built/local` directory, including the `tsgo` binary.
 
-            ## ⚠️ Note
-
-            This is an **unofficial build** and may be unstable. Use at your own risk.
+            ## Note
+            This is an **unofficial nightly build** and may be unstable. Use at your own risk.
             Binaries are built directly from the official repository submodule without modification.
             The build workflow is available [here](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
           draft: false
@@ -253,4 +250,3 @@ jobs:
             artifact-*/*.tar.gz
             tsgo-releases_*_checksums.txt
           fail_on_unmatched_files: true
-          replace_artifacts_on_duplicate: true
