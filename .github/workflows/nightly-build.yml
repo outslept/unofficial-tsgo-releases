@@ -22,17 +22,12 @@ jobs:
       tsgo_commit_sha_short: ${{ steps.vars.outputs.tsgo_commit_sha_short }}
       tsgo_commit_date: ${{ steps.vars.outputs.tsgo_commit_date }}
     steps:
-      - uses: step-security/harden-runner@v2.12.0
-        with:
-          egress-policy: audit
-
       - uses: actions/checkout@v4.2.2
         with:
           submodules: 'recursive'
           fetch-depth: 0
 
       - name: Update submodule
-        shell: bash
         run: |
           git submodule init
           git submodule update
@@ -51,7 +46,6 @@ jobs:
 
       - name: Get commit information from submodule
         id: commit_info
-        shell: bash
         working-directory: ${{ env.TSGO_SRC_PATH }}
         run: |
           echo "SHA=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
@@ -60,7 +54,6 @@ jobs:
 
       - name: Set release variables
         id: vars
-        shell: bash
         run: |
           TIMESTAMP=$(date -u '+%Y%m%d-%H%M%S')
           echo "tag_name=${{ steps.commit_info.outputs.DATE }}-${TIMESTAMP}" >> $GITHUB_OUTPUT
@@ -73,7 +66,6 @@ jobs:
     name: Build tsgo Binary (${{ matrix.target_os }}/${{ matrix.target_arch }})
     needs: determine_release_vars
     strategy:
-      fail-fast: false
       matrix:
         include:
           - target_os: ubuntu-latest
@@ -81,69 +73,44 @@ jobs:
             go_os: linux
             go_arch: amd64
             asset_name_suffix: linux-amd64
-            binary_name: tsgo
-            archive_format: tar.gz
           - target_os: ubuntu-latest
             target_arch: arm64
             go_os: linux
             go_arch: arm64
             asset_name_suffix: linux-arm64
-            binary_name: tsgo
-            archive_format: tar.gz
           - target_os: windows-latest
             target_arch: amd64
             go_os: windows
             go_arch: amd64
             asset_name_suffix: windows-amd64
-            binary_name: tsgo.exe
-            archive_format: zip
           - target_os: windows-latest
             target_arch: arm64
             go_os: windows
             go_arch: arm64
             asset_name_suffix: windows-arm64
-            binary_name: tsgo.exe
-            archive_format: zip
           - target_os: macos-latest
             target_arch: amd64
             go_os: darwin
             go_arch: amd64
             asset_name_suffix: darwin-amd64
-            binary_name: tsgo
-            archive_format: tar.gz
           - target_os: macos-latest
             target_arch: arm64
             go_os: darwin
             go_arch: arm64
             asset_name_suffix: darwin-arm64
-            binary_name: tsgo
-            archive_format: tar.gz
           - target_os: ubuntu-latest
             target_arch: wasm
             go_os: js
             go_arch: wasm
             asset_name_suffix: js-wasm
-            binary_name: tsgo.wasm
-            archive_format: tar.gz
-            env:
-              CGO_ENABLED: 0
 
     runs-on: ${{ matrix.target_os }}
     env:
       GOOS: ${{ matrix.go_os }}
       GOARCH: ${{ matrix.go_arch }}
-      CGO_ENABLED: ${{ matrix.env.CGO_ENABLED || 1 }}
+      CGO_ENABLED: ${{ matrix.go_os == 'js' && '0' || '1' }}
 
     steps:
-      - name: Enable long paths on Windows
-        if: matrix.go_os == 'windows'
-        shell: bash
-        run: git config --global core.longpaths true
-
-      - uses: step-security/harden-runner@v2.12.0
-        with:
-          egress-policy: audit
-
       - uses: actions/checkout@v4.2.2
         with:
           submodules: 'recursive'
@@ -159,66 +126,46 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           targets: ${{ (matrix.go_os == 'linux' && matrix.go_arch == 'arm64' && 'aarch64-unknown-linux-gnu') || (matrix.go_os == 'darwin' && matrix.go_arch == 'arm64' && 'aarch64-apple-darwin') || '' }}
 
       - uses: actions/setup-go@v5.5.0
         with:
           go-version: '>=1.24.0'
           cache: true
-          cache-dependency-path: |
-            ${{ env.TSGO_SRC_PATH }}/**/go.sum
-            ${{ env.TSGO_SRC_PATH }}/**/go.mod
+          cache-dependency-path: '${{ env.TSGO_SRC_PATH }}/**/go.sum'
 
       - name: Install Node.js dependencies
-        shell: bash
         working-directory: ${{ env.TSGO_SRC_PATH }}
         run: npm ci
 
       - name: Build tsgo executable
-        shell: bash
         working-directory: ${{ env.TSGO_SRC_PATH }}
         run: npx hereby build
 
-      - name: Prepare artifact for release (Windows zip)
-        id: prepare_artifact_windows
-        if: matrix.go_os == 'windows' && matrix.archive_format == 'zip'
-        shell: pwsh
+      - name: Create archive
         run: |
           cd ${{ env.TSGO_SRC_PATH }}/built/local
-          Compress-Archive -Path * -DestinationPath "tsgo-${{ matrix.asset_name_suffix }}.zip" -Force
-          echo "ASSET_PATH=$(Resolve-Path -Path "tsgo-${{ matrix.asset_name_suffix }}.zip" | ForEach-Object {$_.Path})" >> $env:GITHUB_OUTPUT
-          echo "ASSET_NAME=tsgo-${{ matrix.asset_name_suffix }}.zip" >> $env:GITHUB_OUTPUT
-
-      - name: Prepare artifact for release (tar.gz)
-        id: prepare_artifact_tar
-        if: matrix.archive_format == 'tar.gz'
-        shell: bash
-        run: |
-          cd ${{ env.TSGO_SRC_PATH }}/built/local
-          tar -czvf "tsgo-${{ matrix.asset_name_suffix }}.tar.gz" *
-          echo "ASSET_PATH=${PWD}/tsgo-${{ matrix.asset_name_suffix }}.tar.gz" >> $GITHUB_OUTPUT
-          echo "ASSET_NAME=tsgo-${{ matrix.asset_name_suffix }}.tar.gz" >> $GITHUB_OUTPUT
+          if [ "${{ matrix.go_os }}" = "windows" ]; then
+            powershell Compress-Archive -Path * -DestinationPath "tsgo-${{ matrix.asset_name_suffix }}.zip"
+            echo "ASSET_PATH=${PWD}/tsgo-${{ matrix.asset_name_suffix }}.zip" >> $GITHUB_ENV
+          else
+            tar -czf "tsgo-${{ matrix.asset_name_suffix }}.tar.gz" *
+            echo "ASSET_PATH=${PWD}/tsgo-${{ matrix.asset_name_suffix }}.tar.gz" >> $GITHUB_ENV
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: artifact-${{ matrix.asset_name_suffix }}
-          path: ${{ (matrix.go_os == 'windows' && steps.prepare_artifact_windows.outputs.ASSET_PATH) || steps.prepare_artifact_tar.outputs.ASSET_PATH }}
-          if-no-files-found: error
+          path: ${{ env.ASSET_PATH }}
 
   publish_release:
     name: Publish GitHub Release
     needs: [determine_release_vars, build_binaries]
     runs-on: ubuntu-latest
     steps:
-      - uses: step-security/harden-runner@v2.12.0
-        with:
-          egress-policy: audit
-
       - uses: actions/download-artifact@v4.3.0
 
       - name: Generate checksums
-        shell: bash
         run: |
           checksum_file="tsgo-releases_${{ needs.determine_release_vars.outputs.tsgo_commit_date }}_checksums.txt"
           find artifact-* -type f \( -name "*.zip" -o -name "*.tar.gz" \) -print0 | while IFS= read -r -d $'\0' file; do
@@ -243,10 +190,8 @@ jobs:
             This is an **unofficial nightly build** and may be unstable. Use at your own risk.
             Binaries are built directly from the official repository submodule without modification.
             The build workflow is available [here](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
-          draft: false
           prerelease: true
           files: |
             artifact-*/*.zip
             artifact-*/*.tar.gz
             tsgo-releases_*_checksums.txt
-          fail_on_unmatched_files: true
