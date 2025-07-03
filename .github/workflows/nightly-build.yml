@@ -22,7 +22,7 @@ jobs:
       tsgo_commit_sha_short: ${{ steps.vars.outputs.tsgo_commit_sha_short }}
       tsgo_commit_date: ${{ steps.vars.outputs.tsgo_commit_date }}
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v4
         with:
           submodules: 'recursive'
           fetch-depth: 0
@@ -111,14 +111,21 @@ jobs:
       CGO_ENABLED: ${{ matrix.go_os == 'js' && '0' || '1' }}
 
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v4
         with:
           submodules: 'recursive'
+
+      - name: Update submodule to latest
+        run: |
+          cd ${{ env.TSGO_SRC_PATH }}
+          git fetch origin main
+          git checkout main
+          git pull origin main
 
       - uses: docker/setup-qemu-action@v3
         if: matrix.target_os == 'ubuntu-latest' && matrix.target_arch == 'arm64'
 
-      - uses: actions/setup-node@v4.4.0
+      - uses: actions/setup-node@v4
         with:
           node-version: 'lts/*'
           cache: 'npm'
@@ -128,7 +135,7 @@ jobs:
         with:
           targets: ${{ (matrix.go_os == 'linux' && matrix.go_arch == 'arm64' && 'aarch64-unknown-linux-gnu') || (matrix.go_os == 'darwin' && matrix.go_arch == 'arm64' && 'aarch64-apple-darwin') || '' }}
 
-      - uses: actions/setup-go@v5.5.0
+      - uses: actions/setup-go@v5
         with:
           go-version: '>=1.24.0'
           cache: true
@@ -163,7 +170,7 @@ jobs:
     needs: [determine_release_vars, build_binaries]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4.3.0
+      - uses: actions/download-artifact@v4
 
       - name: Generate checksums
         run: |
@@ -172,7 +179,7 @@ jobs:
             sha256sum "$file" >> "$checksum_file"
           done
 
-      - uses: softprops/action-gh-release@v2.2.2
+      - uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
