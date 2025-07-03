@@ -153,16 +153,19 @@ jobs:
         working-directory: ${{ env.TSGO_SRC_PATH }}
         run: npx hereby build
 
-      - name: Create archive
+      - name: Create archive (Windows)
+        if: matrix.go_os == 'windows'
+        working-directory: ${{ env.TSGO_SRC_PATH }}/built/local
         run: |
-          cd ${{ env.TSGO_SRC_PATH }}/built/local
-          if [ "${{ matrix.go_os }}" = "windows" ]; then
-            powershell Compress-Archive -Path * -DestinationPath "tsgo-${{ matrix.asset_name_suffix }}.zip"
-            echo "ASSET_PATH=${PWD}/tsgo-${{ matrix.asset_name_suffix }}.zip" >> $GITHUB_ENV
-          else
-            tar -czf "tsgo-${{ matrix.asset_name_suffix }}.tar.gz" *
-            echo "ASSET_PATH=${PWD}/tsgo-${{ matrix.asset_name_suffix }}.tar.gz" >> $GITHUB_ENV
-          fi
+          Compress-Archive -Path * -DestinationPath "tsgo-${{ matrix.asset_name_suffix }}.zip"
+          echo "ASSET_PATH=$PWD/tsgo-${{ matrix.asset_name_suffix }}.zip" >> $env:GITHUB_ENV
+
+      - name: Create archive (Unix)
+        if: matrix.go_os != 'windows'
+        working-directory: ${{ env.TSGO_SRC_PATH }}/built/local
+        run: |
+          tar -czf "tsgo-${{ matrix.asset_name_suffix }}.tar.gz" *
+          echo "ASSET_PATH=${PWD}/tsgo-${{ matrix.asset_name_suffix }}.tar.gz" >> $GITHUB_ENV
 
       - uses: actions/upload-artifact@v4
         with:
