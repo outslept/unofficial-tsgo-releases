@@ -1,0 +1,112 @@
+name: tsgo: Release Nightly from Build
+
+on:
+  workflow_run:
+    workflows: ["tsgo: Build Nightly"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Run ID of a successful "tsgo: Build Nightly" to release'
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: tsgo-nightly-release
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    name: Create GitHub Release from build artifacts
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    env:
+      BUILD_RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.run_id }}
+
+    steps:
+      - name: Download artifacts from build run
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.BUILD_RUN_ID }}
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Read metadata
+        id: meta
+        run: |
+          test -f build-metadata/metadata.json || { echo "metadata.json not found"; exit 1; }
+          TAG_NAME=$(jq -r '.tag_name' build-metadata/metadata.json)
+          RELEASE_NAME=$(jq -r '.release_name' build-metadata/metadata.json)
+          COMMIT_SHA=$(jq -r '.tsgo_commit_sha' build-metadata/metadata.json)
+          COMMIT_DATE=$(jq -r '.tsgo_commit_date' build-metadata/metadata.json)
+          CHANGED=$(jq -r '.changed' build-metadata/metadata.json)
+          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+          echo "RELEASE_NAME=$RELEASE_NAME" >> $GITHUB_ENV
+          echo "COMMIT_SHA=$COMMIT_SHA" >> $GITHUB_ENV
+          echo "COMMIT_DATE=$COMMIT_DATE" >> $GITHUB_ENV
+          echo "CHANGED=$CHANGED" >> $GITHUB_ENV
+
+      - name: Detect built artifacts
+        id: detect
+        run: |
+          shopt -s nullglob
+          files=(artifact-*/*.zip artifact-*/*.tar.gz)
+          if (( ${#files[@]} )); then
+            echo "HAS_BUILDS=true" >> $GITHUB_ENV
+          else
+            echo "HAS_BUILDS=false" >> $GITHUB_ENV
+          fi
+
+      - name: Generate checksums
+        if: env.HAS_BUILDS == 'true' && env.CHANGED == 'true'
+        run: |
+          checksum_file="tsgo_${COMMIT_DATE}_checksums.txt"
+          : > "$checksum_file"
+          shopt -s nullglob
+          for f in artifact-*/*.zip artifact-*/*.tar.gz; do
+            sum=$(sha256sum "$f" | awk '{print $1}')
+            echo "$sum  $(basename "$f")" >> "$checksum_file"
+          done
+
+      - name: Create GitHub release
+        if: env.HAS_BUILDS == 'true' && env.CHANGED == 'true'
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: ${{ env.RELEASE_NAME }}
+          body: |
+            ${{ env.RELEASE_NAME }}
+
+            Build commit: ${{ env.COMMIT_SHA }}
+            Build timestamp: ${{ env.TAG_NAME }}
+
+            ## Contents
+            Archives contain the files from the "built/local" directory, including the "tsgo" binary.
+
+            Note
+            This is an **unofficial nightly build** and may be unstable. Use at your own risk.
+            Binaries are built directly from the official repository submodule without modification.
+            Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ env.BUILD_RUN_ID }}
+          prerelease: true
+          files: |
+            artifact-*/*.zip
+            artifact-*/*.tar.gz
+            tsgo_*_checksums.txt
+
+      - name: No-op (no build artifacts or unchanged)
+        if: env.HAS_BUILDS != 'true' || env.CHANGED != 'true'
+        run: echo "No release created (no build artifacts or no changes)."

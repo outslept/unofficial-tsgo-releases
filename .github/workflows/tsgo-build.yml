@@ -1,0 +1,196 @@
+name: tsgo: Build Nightly
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tsgo-nightly-build
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  TSGO_SRC_PATH: tsgo_submodule
+
+jobs:
+  prepare:
+    name: Select target commit and metadata
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.detect.outputs.changed }}
+      target_sha: ${{ steps.vars.outputs.target_sha }}
+      target_sha_short: ${{ steps.vars.outputs.target_sha_short }}
+      target_date: ${{ steps.vars.outputs.target_date }}
+      tag_name: ${{ steps.vars.outputs.tag_name }}
+      release_name: ${{ steps.vars.outputs.release_name }}
+    steps:
+      - name: Checkout repository (shallow, with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Detect latest submodule commit (no push)
+        id: detect
+        run: |
+          git submodule update --init --recursive --depth=1
+          CURRENT=$(git -C "${{ env.TSGO_SRC_PATH }}" rev-parse HEAD || echo "")
+          git -C "${{ env.TSGO_SRC_PATH }}" fetch --depth=1 origin main
+          LATEST=$(git -C "${{ env.TSGO_SRC_PATH }}" rev-parse origin/main)
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST"  >> "$GITHUB_OUTPUT"
+          if [ "$CURRENT" != "$LATEST" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute release variables
+        id: vars
+        run: |
+          LATEST="${{ steps.detect.outputs.latest }}"
+          DATE=$(git -C "${{ env.TSGO_SRC_PATH }}" log -1 --format=%cs "$LATEST")
+          SHA_SHORT=$(git -C "${{ env.TSGO_SRC_PATH }}" rev-parse --short "$LATEST")
+          TIMESTAMP=$(date -u '+%Y%m%d-%H%M%S')
+
+          echo "target_sha=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "target_sha_short=$SHA_SHORT" >> "$GITHUB_OUTPUT"
+          echo "target_date=$DATE" >> "$GITHUB_OUTPUT"
+          echo "tag_name=${DATE}-${TIMESTAMP}" >> "$GITHUB_OUTPUT"
+          echo "release_name=Nightly build ${TIMESTAMP} of TypeScript Go from microsoft/typescript-go@${SHA_SHORT}" >> "$GITHUB_OUTPUT"
+
+          cat > metadata.json <<JSON
+          {
+            "changed": "${{ steps.detect.outputs.changed }}",
+            "tag_name": "${DATE}-${TIMESTAMP}",
+            "release_name": "Nightly build ${TIMESTAMP} of TypeScript Go from microsoft/typescript-go@${SHA_SHORT}",
+            "tsgo_commit_sha": "${LATEST}",
+            "tsgo_commit_sha_short": "${SHA_SHORT}",
+            "tsgo_commit_date": "${DATE}"
+          }
+          JSON
+
+      - name: Upload build metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-metadata
+          path: metadata.json
+          retention-days: 7
+
+  build:
+    name: Build tsgo Binary (${{ matrix.go_os }}/${{ matrix.go_arch }})
+    needs: prepare
+    if: needs.prepare.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.target_os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target_os: ubuntu-latest
+            go_os: linux
+            go_arch: amd64
+            asset_name_suffix: linux-amd64
+          - target_os: ubuntu-latest
+            go_os: linux
+            go_arch: arm64
+            asset_name_suffix: linux-arm64
+          - target_os: windows-latest
+            go_os: windows
+            go_arch: amd64
+            asset_name_suffix: windows-amd64
+          - target_os: windows-latest
+            go_os: windows
+            go_arch: arm64
+            asset_name_suffix: windows-arm64
+          - target_os: macos-latest
+            go_os: darwin
+            go_arch: amd64
+            asset_name_suffix: darwin-amd64
+          - target_os: macos-latest
+            go_os: darwin
+            go_arch: arm64
+            asset_name_suffix: darwin-arm64
+          - target_os: ubuntu-latest
+            go_os: js
+            go_arch: wasm
+            asset_name_suffix: js-wasm
+    env:
+      GOOS: ${{ matrix.go_os }}
+      GOARCH: ${{ matrix.go_arch }}
+      CGO_ENABLED: 0
+      TSGO_COMMIT_SHA: ${{ needs.prepare.outputs.target_sha }}
+
+    steps:
+      - name: Enable long paths on Windows
+        if: matrix.go_os == 'windows'
+        run: git config --global core.longpaths true
+
+      - name: Checkout repository (shallow, with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Pin submodule to selected commit
+        run: |
+          git submodule update --init --recursive --depth=1
+          git -C "${{ env.TSGO_SRC_PATH }}" fetch --depth=1 origin "$TSGO_COMMIT_SHA"
+          git -C "${{ env.TSGO_SRC_PATH }}" checkout --detach "$TSGO_COMMIT_SHA"
+          echo "Using tsgo commit: $(git -C "${{ env.TSGO_SRC_PATH }}" rev-parse --short HEAD)"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: '${{ env.TSGO_SRC_PATH }}/package-lock.json'
+
+      - name: Setup Rust target for arm64
+        if: matrix.go_arch == 'arm64'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ (matrix.go_os == 'linux' && 'aarch64-unknown-linux-gnu') || (matrix.go_os == 'darwin' && 'aarch64-apple-darwin') || (matrix.go_os == 'windows' && 'aarch64-pc-windows-msvc') }}
+
+      - name: Setup Go from go.mod
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: '${{ env.TSGO_SRC_PATH }}/go.mod'
+          cache: true
+          cache-dependency-path: '${{ env.TSGO_SRC_PATH }}/**/go.sum'
+
+      - name: Install dependencies
+        working-directory: ${{ env.TSGO_SRC_PATH }}
+        run: npm ci
+
+      - name: Build tsgo
+        working-directory: ${{ env.TSGO_SRC_PATH }}
+        run: npx hereby build
+
+      - name: Package artifacts (Windows)
+        if: matrix.go_os == 'windows'
+        shell: pwsh
+        working-directory: ${{ env.TSGO_SRC_PATH }}/built/local
+        run: |
+          Compress-Archive -Path * -DestinationPath "tsgo-${{ matrix.asset_name_suffix }}.zip"
+          echo "ASSET_PATH=$PWD/tsgo-${{ matrix.asset_name_suffix }}.zip" >> $env:GITHUB_ENV
+
+      - name: Package artifacts (Unix)
+        if: matrix.go_os != 'windows'
+        working-directory: ${{ env.TSGO_SRC_PATH }}/built/local
+        run: |
+          tar -czf "tsgo-${{ matrix.asset_name_suffix }}.tar.gz" *
+          echo "ASSET_PATH=${PWD}/tsgo-${{ matrix.asset_name_suffix }}.tar.gz" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifact-${{ matrix.asset_name_suffix }}
+          path: ${{ env.ASSET_PATH }}
+          retention-days: 7
