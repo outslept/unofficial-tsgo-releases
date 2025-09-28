@@ -1,4 +1,4 @@
-name: tsgo: Release Nightly from Build
+name: tsgo / Release Nightly from Build
 
 on:
   workflow_run:

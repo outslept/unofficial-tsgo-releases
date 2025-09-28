@@ -1,4 +1,4 @@
-name: tsgo: Build Nightly
+name: tsgo / Build Nightly
 
 on:
   schedule:
